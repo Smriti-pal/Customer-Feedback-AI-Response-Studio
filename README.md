@@ -122,15 +122,73 @@ The prompt instructed Gemini to:
 
 
 
-\## How to Run
+## How to Run
 
+Follow the steps below to run the project locally.
 
+### 1. Clone the Repository
 
-1\. Place `Reviews.csv` in the same folder as the Jupyter Notebook.
+Clone the GitHub repository:
 
-2\. Open the notebook in Jupyter Notebook or JupyterLab.
+```bash
+git clone https://github.com/Smriti-pal/Customer-Feedback-AI-Response-Studio.git
+```
 
-3\. Install the Gemini package:
+Navigate to the project folder:
+
+```bash
+cd Customer-Feedback-AI-Response-Studio
+```
+
+You can also download the repository as a ZIP file and extract it.
+
+### 2. Check the Dataset
+
+Make sure `Reviews.csv` is present in the project folder.
+
+### 3. Install Required Libraries
+
+Open Command Prompt, Anaconda Prompt, or Terminal and run:
+
+```bash
+pip install -U pandas google-genai jupyter
+```
+
+### 4. Open Jupyter Notebook
+
+Start Jupyter Notebook:
+
+```bash
+jupyter notebook
+```
+
+Open the project notebook from the Jupyter interface.
+
+### 5. Run the Notebook
+
+Run all the notebook cells **from top to bottom**.
+
+The notebook will:
+
+* Load and clean the customer reviews.
+* Identify critical negative reviews.
+* Analyze complaint-related keywords.
+* Select the top 3 critical reviews.
+* Generate personalized apology emails using Google Gemini.
+
+### 6. Generate AI Responses
+
+The notebook will use the configured **Google Gemini API key** to generate personalized apology emails for the three selected critical reviews.
+
+### 7. View the Results
+
+After successful execution, the notebook will display:
+
+* Cleaned customer review data
+* Critical negative reviews
+* Complaint keyword analysis
+* Top 3 selected critical reviews
+* Personalized AI-generated apology emails
 
 
 
