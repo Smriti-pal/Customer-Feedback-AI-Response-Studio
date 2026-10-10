@@ -34,6 +34,15 @@ SAFETY_TERMS = ISSUE_RULES["Safety / Health"]
 SEVERITY = {1: "Critical", 2: "High", 3: "Moderate", 4: "Low", 5: "Positive feedback"}
 PRIORITY_RANK = {"Urgent": 0, "High": 1, "Watch": 2, "Normal": 3}
 PRIORITY_BASE = {1: 70, 2: 55, 3: 35, 4: 15, 5: 5}
+KEYWORD_STOPWORDS = {
+    "about", "after", "again", "amazon", "because", "been", "before", "being", "could",
+    "from", "have", "into", "just", "more", "most", "only", "other", "product", "review",
+    "some", "than", "that", "their", "there", "these", "they", "this", "those", "very",
+    "was", "were", "what", "when", "where", "which", "while", "with", "would", "your",
+    "also", "and", "are", "but", "for", "had", "has", "her", "him", "his", "how", "its",
+    "not", "our", "out", "she", "the", "then", "them", "too", "you", "use", "used", "using",
+    "one", "get", "got", "can", "will", "now", "buy", "bought", "much", "many", "make",
+}
 
 
 def _analyze(text, rating):
@@ -133,6 +142,14 @@ def _summary(connection, version):
         for priority, count in zip(priority_names, priority_counts)
     ]
     critical = counts.get("rating_1", 0) + counts.get("rating_2", 0)
+    keyword_row = connection.execute("SELECT value FROM metadata WHERE key='top_keywords'").fetchone()
+    if keyword_row:
+        top_keywords = json.loads(keyword_row[0])
+    else:
+        top_keywords = _keyword_summary(connection)
+        connection.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('top_keywords',?)",
+                           (json.dumps(top_keywords),))
+        connection.commit()
     return {
         "ready": True,
         "version": version,
@@ -151,8 +168,19 @@ def _summary(connection, version):
             for name in ("Positive", "Neutral", "Negative")
         ],
         "flagged_rows": [],
-        "top_keywords": [],
+        "top_keywords": top_keywords,
     }
+
+
+def _keyword_summary(connection):
+    frequencies = Counter()
+    for (review,) in connection.execute("SELECT review FROM reviews WHERE rating <= 2"):
+        terms = set(re.findall(r"[a-z]{3,}", review.lower())) - KEYWORD_STOPWORDS
+        frequencies.update(terms)
+    return [
+        {"Complaint Keyword": word, "Frequency": count}
+        for word, count in frequencies.most_common(12)
+    ]
 
 
 def prepare_store(csv_path, database_path, source_url, progress=None):
@@ -174,6 +202,7 @@ def prepare_store(csv_path, database_path, source_url, progress=None):
         database_path.unlink(missing_ok=True)
 
     connection = _connect(database_path)
+    keyword_counts = Counter()
     try:
         connection.execute("PRAGMA journal_mode=OFF")
         connection.execute("PRAGMA synchronous=OFF")
@@ -203,6 +232,9 @@ def prepare_store(csv_path, database_path, source_url, progress=None):
                 review = (row.get("Text") or "").strip()
                 if not review:
                     continue
+                if rating <= 2:
+                    terms = set(re.findall(r"[a-z]{3,}", review.lower())) - KEYWORD_STOPWORDS
+                    keyword_counts.update(terms)
                 context = _analyze(review, rating)
                 batch.append((
                     index, rating, (row.get("ProfileName") or "")[:100],
@@ -238,6 +270,12 @@ def prepare_store(csv_path, database_path, source_url, progress=None):
         connection.execute("CREATE INDEX idx_review_severity ON reviews(severity)")
         connection.execute("CREATE INDEX idx_review_reason ON reviews(reason)")
         connection.execute("INSERT INTO metadata(key,value) VALUES('source_version',?)", (source_version,))
+        top_keywords = [
+            {"Complaint Keyword": word, "Frequency": count}
+            for word, count in keyword_counts.most_common(12)
+        ]
+        connection.execute("INSERT INTO metadata(key,value) VALUES('top_keywords',?)",
+                           (json.dumps(top_keywords),))
         connection.commit()
         return _summary(connection, source_version)
     finally:
