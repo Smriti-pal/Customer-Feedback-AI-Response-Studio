@@ -1,81 +1,59 @@
-# Customer Feedback Analysis and Response Studio
+# Customer Feedback Analysis and AI Response Studio
 
-A notebook and hosted web app for reviewing customer feedback, prioritizing potential problems, exploring sentiment, and drafting personalized support emails.
+A Flask web app built from the dashboard and email studio already in the Jupyter notebook. The web interface uses the notebook's existing HTML, CSS, charts, queue, filters, and response drafting flow. The app uses **Reviews.csv only**; it does not substitute a sample file or accept another dataset.
 
-## What is included
+## Files
 
-- `app.py` is the GitHub-connected web app. It includes interactive charts, full-dataset search and filters, priority flags, CSV export, and optional Gemini email drafting.
-- `Customer_Feedback_Analysis_AI_Response_Localhost.ipynb` contains the original local analysis notebook and Flask dashboard.
-- `sample_reviews.csv` is a small illustrative dataset so the web app works immediately after deployment.
-- `Reviews.csv` is the full local dataset. It is intentionally excluded from GitHub because it is about 300 MB.
+- `app.py` serves the notebook's existing interface and loads `Reviews.csv`.
+- `Customer_Feedback_Analysis_AI_Response_Localhost.ipynb` contains the original analysis notebook and source UI.
+- `render.yaml` configures a Flask web service and persistent data disk on Render.
+- `.env.example` shows optional local Gemini settings. Never commit a real key.
 
-The sample records are examples for demonstrating the app. The sentiment and priority labels are rule-based estimates intended to help triage feedback; they do not replace reading a review.
+The 300 MB `Reviews.csv` stays out of GitHub. GitHub enforces a 100 MB maximum for a single Git object, and keeping the data outside source control also avoids publishing customer review data.
 
 ## Run locally
 
-1. Install Python 3.10 or later.
-2. Create and activate a virtual environment, then install dependencies:
+1. Install Python 3.10 or newer.
+2. Install the packages:
 
-   ```bash
+   ```powershell
    python -m venv .venv
-   # Windows PowerShell
    .venv\Scripts\Activate.ps1
-   # macOS or Linux: source .venv/bin/activate
    pip install -r requirements.txt
    ```
 
-3. Start the web app:
+3. Put `Reviews.csv` beside `app.py`.
+4. Start the app:
 
-   ```bash
-   streamlit run app.py
+   ```powershell
+   python app.py
    ```
 
-The sample review data loads by default. To analyze your local full dataset, place `Reviews.csv` beside `app.py`; it will be detected automatically. You can also upload a CSV from the sidebar. The CSV needs `Text` and `Score` columns; `ProfileName` and `ProductId` are optional.
+5. Open `http://127.0.0.1:10000` and choose **Open Feedback Dashboard**.
 
-To run the notebook dashboard, open the notebook in JupyterLab, run its setup and data-loading cells, and then run the final **Localhost Dashboard and Email Studio** cell. That Flask dashboard is for local use.
+The dashboard route is `/dashboard`. If the CSV is absent, the app displays a clear missing-data message instead of silently loading sample data.
 
-## Deploy from GitHub
+## Deploy the same UI
 
-GitHub stores the code, but GitHub Pages cannot run the Python app. To publish the interactive app, connect the repository to [Streamlit Community Cloud](https://share.streamlit.io/):
+This is a Flask application. Streamlit Community Cloud only runs Streamlit apps, so it cannot serve this notebook's Flask UI unchanged. Use Render to deploy the GitHub repository:
 
-1. Create a GitHub repository and push this project. Keep `Reviews.csv`, `.env`, Jupyter runtime files, and API keys out of the repository.
-2. Sign in to Streamlit Community Cloud with GitHub and create an app from the repository.
-3. Select the repository branch and set the app file to `app.py`, then deploy.
-4. The hosted app opens with the included sample reviews. Upload a smaller CSV through the sidebar to analyze it.
+1. In Render, choose **New > Blueprint** and connect this repository on the `main` branch. Render reads `render.yaml` to configure the service.
+2. The blueprint uses a paid Standard web service and a persistent 1 GB disk at `/var/data`. Render's free service filesystem is ephemeral, and persistent disks are available for paid services.
+3. After the service is created, transfer your local `Reviews.csv` to `/var/data/Reviews.csv` on the service disk using the Render dashboard's SSH/SCP instructions. The file must be available at this path; it is not downloaded from GitHub.
+4. Restart or redeploy the service after the transfer. Open the Render URL and select **Open Feedback Dashboard**.
+5. If you want AI drafts, set `GEMINI_API_KEY` in the Render service environment settings and redeploy. The dashboard works without Gemini.
 
-The full local dataset is too large for a regular GitHub file and may exceed hosted app memory or upload limits. Keep it locally or use a data store suitable for production; do not add it to Git history.
+Render deployment documentation: [Flask apps](https://render.com/docs/deploy-flask) and [persistent disks and file transfer](https://render.com/docs/disks).
 
-## Optional Gemini email drafts
+## Gemini and customer data
 
-AI drafting is disabled until a key is configured. Create a local `.env` file (it is ignored by Git):
+The email studio sends review text and response context to Google's Gemini API only when someone requests a draft. Configure the key outside GitHub. Before using real customer data on a public service, confirm your organization's privacy and data-sharing requirements. The service does not have user accounts or access controls.
 
-```text
-GEMINI_API_KEY=your-key-here
-GEMINI_MODEL=gemini-3.8-flash
-```
+## Review flags
 
-For Streamlit Community Cloud, add the values in the app's **Settings → Secrets** rather than committing them. Example secrets:
+- **Urgent:** 1-star rating or safety/health language.
+- **High:** 2-star rating or strongly negative wording on a 3-star review.
+- **Watch:** other negative text sentiment.
+- **Normal:** no elevated flag rule matched.
 
-```toml
-GEMINI_API_KEY = "your-key-here"
-GEMINI_MODEL = "gemini-3.8-flash"
-```
-
-When a draft is requested, the selected review and provided resolution context are sent to Google's Gemini API. Confirm that your organization permits sharing the review text with that service. The app creates a draft; it does not send email. A verified customer email can be entered to open the draft in the user's email application.
-
-## Filters and flags
-
-The queue supports search across review text, customer, product, and issue, plus filters for priority, severity, sentiment, rating, and flag reason. It includes all levels: **Urgent**, **High**, **Watch**, and **Normal**. Export downloads the currently filtered reviews.
-
-- **Urgent:** 1-star rating or a detected safety/health term.
-- **High:** 2-star rating or strongly negative language on a 3-star review.
-- **Watch:** negative wording without a higher priority trigger.
-- **Normal:** no elevated priority rule matched.
-
-## Data and privacy
-
-The demo app is publicly reachable when deployed with a public repository. Do not upload confidential or personal customer information to a public app. Uploaded data is processed in the app session; this project does not implement user accounts, durable storage, or access controls. Gemini receives review text only when a user explicitly generates a response.
-
-## License
-
-Add a license file before redistributing the project or dataset. The sample data is illustrative; check the source and license of any real review dataset before sharing it.
+Sentiment and issue types are word-list estimates for triage. Read the review before taking action.
