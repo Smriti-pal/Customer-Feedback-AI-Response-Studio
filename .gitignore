@@ -1,0 +1,28 @@
+# Python environments and secrets
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Local data (the full source dataset is too large for a normal GitHub file)
+Reviews.csv
+*.csv
+!sample_reviews.csv
+
+# Notebook and runtime artifacts
+.ipynb_checkpoints/
+.virtual_documents/
+.jupyter-*/
+.jupyter-cookie-secret*
+*.log
+__pycache__/
+*.py[cod]
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
