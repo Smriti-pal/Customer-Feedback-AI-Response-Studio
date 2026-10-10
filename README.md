@@ -22,7 +22,7 @@ A Flask dashboard based on **section 14** of the Jupyter notebook. It keeps that
    ```
 
 4. In Render, choose **New > Blueprint**, connect this repository, and keep the `free` plan from `render.yaml`.
-5. When Render asks for `REVIEWS_CSV_URL`, paste the release download URL. Do not add `Reviews.csv` to the Git repository.
+5. Keep the prefilled `REVIEWS_CSV_URL`; it points to the release asset. Do not add `Reviews.csv` to the Git repository.
 6. Let the first deploy finish, then open the Render URL and select **Open Feedback Dashboard**.
 7. To enable Gemini email drafts, add `GEMINI_API_KEY` under the Render service's environment variables. This is optional; the dashboard works without it.
 
