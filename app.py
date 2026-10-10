@@ -163,8 +163,15 @@ def explain_gemini_error(error):
     name=type(error).__name__.lower()
     if isinstance(error,(TimeoutError,ConnectionError)) or any(word in name for word in ("connect","timeout","network")):
         return "Could not reach Gemini. Check internet, firewall, or proxy settings."
-    if "closed" in str(error).lower(): return "Gemini client is closed. Restart the kernel and run setup cells again."
-    return f"Gemini request failed ({type(error).__name__}). Check key, model, network, and quota."
+    if "closed" in str(error).lower(): return "Gemini client is closed. Restart the Render web service and try again."
+    detail = str(error)
+    secret = _configured_gemini_key()
+    if secret:
+        detail = detail.replace(secret, "[hidden]")
+    detail = re.sub(r"\s+", " ", detail).strip()[:240]
+    if isinstance(error, NameError):
+        return f"Gemini client code error: {detail or 'an internal name is missing'}. Check the service logs."
+    return f"Gemini request failed ({type(error).__name__}): {detail or 'no error details supplied'}"
 
 def generate_email(review,rating,customer_name="",product="",issue_types=None,additional_details="",resolution="",agent_name="Customer Support Team",tone="Professional and empathetic"):
     """Generate a personal response using issue, sentiment, and severity context."""
@@ -182,10 +189,10 @@ def generate_email(review,rating,customer_name="",product="",issue_types=None,ad
         additional_details=additional_details or "None supplied",resolution=resolution or "No resolution authorized; do not promise one.",
         tone=tone or "Professional and empathetic",agent_name=agent_name or "Customer Support Team")
     try:
-        from google.genai import types
         response=get_gemini_client().models.generate_content(model=GEMINI_MODEL,contents=prompt,
-            config=types.GenerateContentConfig(max_output_tokens=512,automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)))
+            config={"max_output_tokens": 512})
     except Exception as exc:
+        app.logger.exception("Gemini email request failed (model=%s)", GEMINI_MODEL)
         raise GeminiRequestError(explain_gemini_error(exc)) from exc
     try: email_text=response.text.strip() if response and response.text else ""
     except (AttributeError,ValueError): email_text=""
@@ -286,6 +293,7 @@ _feedback_dashboard_cache = None
 _feedback_dashboard_lock = Lock()
 _feedback_dashboard_busy = False
 _feedback_dashboard_error = ""
+_feedback_dashboard_progress = {"phase": "starting", "processed": 0, "total_bytes": 0, "scanned_bytes": 0}
 
 
 def _dashboard_snapshot():
@@ -293,14 +301,23 @@ def _dashboard_snapshot():
 
 
 def _build_feedback_dashboard():
-    global _feedback_dashboard_cache, _feedback_dashboard_busy, _feedback_dashboard_error
+    global _feedback_dashboard_cache, _feedback_dashboard_busy, _feedback_dashboard_error, _feedback_dashboard_progress
+    def update_progress(phase, processed, total, scanned=None):
+        global _feedback_dashboard_progress
+        _feedback_dashboard_progress = {
+            "phase": phase,
+            "processed": int(processed or 0),
+            "total_bytes": int(total or 0),
+            "scanned_bytes": int(scanned if scanned is not None else processed or 0),
+        }
     try:
         _feedback_dashboard_cache = prepare_store(
-            DATASET_PATH, DATABASE_PATH, os.getenv("REVIEWS_CSV_URL", "").strip()
+            DATASET_PATH, DATABASE_PATH, os.getenv("REVIEWS_CSV_URL", "").strip(), update_progress
         )
         _feedback_dashboard_error = ""
     except Exception as exc:
         _feedback_dashboard_error = f"{type(exc).__name__}: {exc}"
+        app.logger.exception("Dashboard dataset preparation failed")
     finally:
         _feedback_dashboard_busy = False
 
@@ -350,7 +367,7 @@ async function refresh(){try{const response=await fetch('/api/dashboard',{cache:
   const message=document.getElementById('prepare-message');
   const status=document.getElementById('prepare-status');
   const retry=document.getElementById('retry-dashboard');
-  async function checkDashboard(){try{const response=await fetch('/api/dashboard',{cache:'no-store'});const data=await response.json();if(data.ready){location.reload();return}if(data.error){title.textContent='Dashboard analysis needs a retry';message.textContent=data.error;if(retry)retry.hidden=false;return}if(data.busy){status.textContent='The first analysis is running in the background…';setTimeout(checkDashboard,1800)}else{status.textContent=data.message||'Dashboard is waiting for notebook data.'}}catch(error){status.textContent='Dashboard server is not responding. Refresh the page after checking that the notebook server is running.'}}
+  async function checkDashboard(){try{const response=await fetch('/api/dashboard',{cache:'no-store'});const data=await response.json();if(data.ready){location.reload();return}if(data.error){title.textContent='Dashboard analysis needs a retry';message.textContent=data.error;if(retry)retry.hidden=false;return}if(data.busy){const p=data.progress||{};if(p.phase==='download'){const percent=p.total_bytes?Math.min(99,Math.round(p.processed/p.total_bytes*100)):0;status.textContent='Downloading Reviews.csv'+(percent?' ('+percent+'%)':'')+'…'}else if(p.phase==='index'){status.textContent='Building dashboard filters for '+p.processed.toLocaleString()+' reviews…'}else if(p.processed){const percent=p.total_bytes&&p.scanned_bytes?Math.min(99,Math.round(p.scanned_bytes/p.total_bytes*100)):0;status.textContent='Analyzed '+p.processed.toLocaleString()+' review rows'+(percent?' ('+percent+'% of file read)':'')+'…'}else{status.textContent='Starting the dataset analysis…'}setTimeout(checkDashboard,1800)}else{status.textContent=data.message||'Dashboard is waiting for notebook data.'}}catch(error){status.textContent='Dashboard server is not responding. Check the service status and logs in Render.'}}
   if(retry)retry.addEventListener('click',()=>location.href='/dashboard?retry=1');
   checkDashboard();
 }
@@ -398,6 +415,7 @@ def dashboard_status():
     if _feedback_dashboard_error:
         return jsonify(ready=False, busy=False, error=_feedback_dashboard_error, message="Dashboard preparation failed.")
     return jsonify(ready=False, busy=bool(_feedback_dashboard_busy), error="",
+                   progress=dict(_feedback_dashboard_progress),
                    message="Downloading and analyzing Reviews.csv.")
 
 
@@ -431,21 +449,18 @@ def home():
         if action == "test":
             try:
                 if not has_gemini_key():
-                    raise ValueError("No key found. Add GEMINI_API_KEY to .env, then restart the notebook kernel.")
-                from google.genai import types
+                    raise ValueError("No key found. Add GEMINI_API_KEY to the Render service Environment settings, then redeploy.")
                 result = get_gemini_client().models.generate_content(
                     model=GEMINI_MODEL,
                     contents="Reply with OK.",
-                    config=types.GenerateContentConfig(
-                        max_output_tokens=128,
-                        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-                    ),
+                    config={"max_output_tokens": 128},
                 )
                 if not result or not result.text:
                     raise RuntimeError("Gemini returned an empty test response.")
                 message = "Gemini connection works. The test used one small API request."
                 message_type = "success"
             except Exception as exc:
+                app.logger.exception("Gemini connection test failed (model=%s)", GEMINI_MODEL)
                 message = explain_gemini_error(exc) if not isinstance(exc, ValueError) else str(exc)
                 message_type = "error"
 
@@ -454,7 +469,7 @@ def home():
                 message = "Add a customer review before generating a response."
                 message_type = "error"
             elif not has_gemini_key():
-                message = "No key found. Add GEMINI_API_KEY to .env and restart the notebook kernel."
+                message = "No key found. Add GEMINI_API_KEY to the Render service Environment settings, then redeploy."
                 message_type = "error"
             else:
                 try:

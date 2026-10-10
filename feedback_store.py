@@ -79,7 +79,7 @@ def _analyze(text, rating):
     }
 
 
-def ensure_csv(path, source_url):
+def ensure_csv(path, source_url, progress=None):
     path = Path(path)
     if path.is_file():
         return path
@@ -89,7 +89,16 @@ def ensure_csv(path, source_url):
     temporary = path.with_suffix(path.suffix + ".download")
     request = urllib.request.Request(source_url, headers={"User-Agent": "CustomerFeedbackStudio/1.0"})
     with urllib.request.urlopen(request, timeout=600) as response, temporary.open("wb") as output:
-        shutil.copyfileobj(response, output, length=1024 * 1024)
+        total = int(response.headers.get("Content-Length", 0) or 0)
+        downloaded = 0
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            output.write(chunk)
+            downloaded += len(chunk)
+            if progress:
+                progress("download", downloaded, total)
     temporary.replace(path)
     return path
 
@@ -146,8 +155,8 @@ def _summary(connection, version):
     }
 
 
-def prepare_store(csv_path, database_path, source_url):
-    csv_path = ensure_csv(csv_path, source_url)
+def prepare_store(csv_path, database_path, source_url, progress=None):
+    csv_path = ensure_csv(csv_path, source_url, progress)
     database_path = Path(database_path)
     database_path.parent.mkdir(parents=True, exist_ok=True)
     source_version = f"{csv_path.stat().st_size}:{csv_path.stat().st_mtime_ns}"
@@ -207,9 +216,21 @@ def prepare_store(csv_path, database_path, source_url):
                     connection.executemany("INSERT INTO reviews VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", batch)
                     connection.commit()
                     batch.clear()
+                    if progress:
+                        try:
+                            scanned = source.buffer.tell()
+                        except (AttributeError, OSError):
+                            scanned = 0
+                        progress("analyze", index + 1, csv_path.stat().st_size, scanned)
             if batch:
                 connection.executemany("INSERT INTO reviews VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", batch)
                 connection.commit()
+            if progress:
+                progress("analyze", index + 1 if "index" in locals() else 0,
+                         csv_path.stat().st_size, csv_path.stat().st_size)
+        if progress:
+            progress("index", index + 1 if "index" in locals() else 0,
+                     csv_path.stat().st_size, csv_path.stat().st_size)
         connection.execute("CREATE INDEX idx_review_priority ON reviews(priority_rank, priority_score DESC, confidence DESC)")
         connection.execute("CREATE INDEX idx_review_rating ON reviews(rating)")
         connection.execute("CREATE INDEX idx_review_issue ON reviews(issue)")
