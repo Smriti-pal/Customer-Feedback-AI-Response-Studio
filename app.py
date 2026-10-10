@@ -479,7 +479,7 @@ def home():
                         raise ValueError("Choose a rating from 1 to 5.") from None
                     if rating not in range(1, 6):
                         raise ValueError("Choose a rating from 1 to 5.")
-                    issues = [form["issue"]] if form["issue"] != "Auto-detect" else studio_detect_issue(form["review"])
+                    issues = [form["issue"]] if form["issue"] != "Auto-detect" else detect_issue_types(form["review"])
                     draft = generate_email(
                         review=form["review"], rating=rating,
                         customer_name=form["customer_name"], product=form["product"],
