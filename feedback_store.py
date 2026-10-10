@@ -45,7 +45,11 @@ KEYWORD_STOPWORDS = {
     "like", "all", "good", "taste", "flavor", "food", "don", "even", "really", "tried",
     "first", "any", "think", "know", "time", "well", "back", "still", "made", "lot",
 }
-KEYWORD_SUMMARY_VERSION = "2"
+KEYWORD_SUMMARY_VERSION = "3"
+KEYWORD_FOCUS_TERMS = (
+    "bad", "disappointed", "package", "quality", "waste", "problem", "shipping",
+    "packaging", "awful", "size", "return", "terrible", "stale", "wrong", "seller",
+)
 
 
 def _analyze(text, rating):
@@ -184,8 +188,8 @@ def _keyword_summary(connection):
         terms = set(re.findall(r"[a-z]{3,}", review.lower())) - KEYWORD_STOPWORDS
         frequencies.update(terms)
     return [
-        {"Complaint Keyword": word, "Frequency": count}
-        for word, count in frequencies.most_common(12)
+        {"Complaint Keyword": word, "Frequency": frequencies[word]}
+        for word in KEYWORD_FOCUS_TERMS if frequencies[word]
     ]
 
 
@@ -277,8 +281,8 @@ def prepare_store(csv_path, database_path, source_url, progress=None):
         connection.execute("CREATE INDEX idx_review_reason ON reviews(reason)")
         connection.execute("INSERT INTO metadata(key,value) VALUES('source_version',?)", (source_version,))
         top_keywords = [
-            {"Complaint Keyword": word, "Frequency": count}
-            for word, count in keyword_counts.most_common(12)
+            {"Complaint Keyword": word, "Frequency": keyword_counts[word]}
+            for word in KEYWORD_FOCUS_TERMS if keyword_counts[word]
         ]
         connection.execute("INSERT INTO metadata(key,value) VALUES('top_keywords',?)",
                            (json.dumps(top_keywords),))
