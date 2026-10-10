@@ -10,6 +10,7 @@ env/
 # Local data (the full source dataset is too large for a normal GitHub file)
 Reviews.csv
 *.csv
+.customer-feedback.sqlite*
 
 # Notebook and runtime artifacts
 .ipynb_checkpoints/

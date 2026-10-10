@@ -1,12 +1,10 @@
 """Customer feedback Flask app using the notebook's existing web interface."""
 import os
 import re
-import shutil
-import urllib.request
 from pathlib import Path
 
-import pandas as pd
 from dotenv import load_dotenv
+from feedback_store import fetch_queue, prepare_store
 
 load_dotenv()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
@@ -115,52 +113,8 @@ def analyze_review_context(review_text, rating):
 
 
 DATASET_PATH = Path(os.getenv("REVIEWS_CSV_PATH", "Reviews.csv"))
-REQUIRED_COLUMNS = {"Score", "Text"}
+DATABASE_PATH = Path(os.getenv("REVIEWS_DB_PATH", str(Path.cwd() / ".customer-feedback.sqlite")))
 DATA_ERROR = ""
-
-def load_reviews(path=DATASET_PATH):
-    global DATA_ERROR
-    if not path.is_file():
-        source_url = os.getenv("REVIEWS_CSV_URL", "").strip()
-        if source_url:
-            try:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                temporary_path = path.with_suffix(path.suffix + ".download")
-                request = urllib.request.Request(source_url, headers={"User-Agent": "CustomerFeedbackStudio/1.0"})
-                with urllib.request.urlopen(request, timeout=600) as response, temporary_path.open("wb") as output:
-                    shutil.copyfileobj(response, output, length=1024 * 1024)
-                temporary_path.replace(path)
-            except Exception as exc:
-                DATA_ERROR = f"Could not download Reviews.csv: {type(exc).__name__}: {exc}"
-                return pd.DataFrame(columns=["Score", "Text"])
-        else:
-            DATA_ERROR = f"Reviews.csv was not found at {path}. Add it beside app.py or configure REVIEWS_CSV_URL."
-            return pd.DataFrame(columns=["Score", "Text"])
-    # Keep only the fields used by the dashboard and email writer. This reduces
-    # memory enough for the free web service while retaining every review.
-    needed_columns = {"Score", "Text", "ProductId", "ProfileName"}
-    try:
-        frame = pd.read_csv(
-            path,
-            usecols=lambda column: column in needed_columns,
-            low_memory=False,
-        )
-    except Exception as exc:
-        DATA_ERROR = f"Could not read Reviews.csv: {type(exc).__name__}: {exc}"
-        return pd.DataFrame(columns=["Score", "Text"])
-    missing = REQUIRED_COLUMNS - set(frame.columns)
-    if missing:
-        raise ValueError(f"Reviews.csv is missing required columns: {sorted(missing)}")
-    frame = frame.dropna(subset=["Score", "Text"])
-    score = pd.to_numeric(frame["Score"], errors="coerce")
-    valid = score.notna() & score.between(1, 5) & score.mod(1).eq(0)
-    frame = frame.loc[valid].copy()
-    frame["Score"] = score.loc[valid].astype("int8")
-    frame["Text"] = frame["Text"].astype(str).str.strip()
-    return frame.loc[frame["Text"].ne("")].reset_index(drop=True)
-
-
-df = load_reviews()
 
 
 EMAIL_PROMPT = """
@@ -323,140 +277,33 @@ TONE_OPTIONS = [
 
 @app.get("/health")
 def health():
-    return jsonify(status="ok", key_configured=has_gemini_key(), model=GEMINI_MODEL, reviews_loaded=not df.empty, total_reviews=len(df))
+    data = _feedback_dashboard_cache or {}
+    return jsonify(status="ok", key_configured=has_gemini_key(), model=GEMINI_MODEL,
+                   reviews_loaded=bool(data.get("ready")), total_reviews=data.get("total", 0))
 
 
-# Transparent word-list sentiment and rating-based priority flags for the dashboard.
-# Dashboard calculations use the same transparent sentiment and issue rules as email drafting.
 _feedback_dashboard_cache = None
 _feedback_dashboard_lock = Lock()
 _feedback_dashboard_busy = False
 _feedback_dashboard_error = ""
 
+
 def _dashboard_snapshot():
-    global _feedback_dashboard_cache
-    reviews = globals().get("df")
-    if not isinstance(reviews, pd.DataFrame) or reviews.empty:
-        return {"ready": False, "message": "Run the data-loading cells first.", "total": 0}
-    version = f"{id(reviews)}:{len(reviews)}"
-    if _feedback_dashboard_cache and _feedback_dashboard_cache.get("version") == version:
-        return _feedback_dashboard_cache
-
-    text = reviews["Text"]
-    boundary = chr(92) + "b"
-    space = chr(92) + "s+"
-    positive = text.str.count(boundary + "(?:" + "|".join(map(re.escape, sorted(SENTIMENT_POSITIVE_TERMS))) + ")" + boundary, flags=re.IGNORECASE)
-    negative = text.str.count(boundary + "(?:" + "|".join(map(re.escape, sorted(SENTIMENT_NEGATIVE_TERMS))) + ")" + boundary, flags=re.IGNORECASE)
-    negator = "(?:no|not|never|hardly)"
-    negated_positive = text.str.count(boundary + negator + space + "(?:" + "|".join(map(re.escape, sorted(SENTIMENT_POSITIVE_TERMS))) + ")" + boundary, flags=re.IGNORECASE)
-    negated_negative = text.str.count(boundary + negator + space + "(?:" + "|".join(map(re.escape, sorted(SENTIMENT_NEGATIVE_TERMS))) + ")" + boundary, flags=re.IGNORECASE)
-    positive = (positive - negated_positive + negated_negative).clip(lower=0)
-    negative = (negative - negated_negative + negated_positive).clip(lower=0)
-    sentiment_score = positive - negative
-    issue_value = pd.Series("General Complaint", index=reviews.index, dtype="object")
-    for category, terms in ISSUE_RULES.items():
-        issue_pattern = boundary + "(?:" + "|".join(map(re.escape, sorted(terms))) + ")" + boundary
-        issue_match = text.str.contains(issue_pattern, case=False, na=False)
-        issue_value.loc[issue_value.eq("General Complaint") & issue_match] = category
-    cue_count = positive + negative
-    confidence = (sentiment_score.abs() / cue_count.replace(0, 1) * 100).round().astype(int)
-
-    sentiment = pd.Series("Neutral", index=reviews.index, dtype="object")
-    sentiment.loc[sentiment_score > 0] = "Positive"
-    sentiment.loc[sentiment_score < 0] = "Negative"
-    score = pd.to_numeric(reviews["Score"], errors="coerce").fillna(0).astype(int)
-    safety_pattern = boundary + "(?:" + "|".join(map(re.escape, sorted(SAFETY_TERMS))) + ")" + boundary
-    safety_hits = text.str.count(safety_pattern, flags=re.IGNORECASE)
-    strong_negative = (negative >= 2) & (negative > positive)
-
-    priority = pd.Series("Normal", index=reviews.index, dtype="object")
-    priority.loc[(sentiment.eq("Negative"))] = "Watch"
-    priority.loc[(score == 2) | ((score == 3) & strong_negative)] = "High"
-    priority.loc[(score == 1) | (safety_hits > 0)] = "Urgent"
-    severity = score.map({1:"Critical", 2:"High", 3:"Moderate", 4:"Low", 5:"Positive feedback"}).fillna("Unrated")
-
-    reason = pd.Series("No elevated risk detected", index=reviews.index, dtype="object")
-    reason.loc[score == 1] = "1-star rating"
-    reason.loc[score == 2] = "2-star rating"
-    reason.loc[(score >= 3) & sentiment.eq("Negative")] = "Negative text sentiment"
-    reason.loc[(score == 3) & strong_negative] = "Strong negative wording"
-    reason.loc[safety_hits > 0] = "Safety or health language"
-    rating_counts = score.value_counts().reindex([1,2,3,4,5], fill_value=0)
-    sentiment_counts = sentiment.value_counts().reindex(["Positive","Neutral","Negative"], fill_value=0)
-    priority_counts = priority.value_counts().reindex(["Urgent","High","Watch","Normal"], fill_value=0)
-    total = max(1, len(reviews))
-    rating_max = max(1, int(rating_counts.max()))
-    priority_max = max(1, int(priority_counts.max()))
-    rating_chart = [{"label":str(k),"value":int(v),"percent":round(int(v)/total*100,1),"height":max(2,round(int(v)/rating_max*100))} for k,v in rating_counts.items()]
-    priority_chart = [{"label":k,"value":int(priority_counts[k]),"percent":round(int(priority_counts[k])/total*100,1),"height":max(2,round(int(priority_counts[k])/priority_max*100))} for k in ["Urgent","High","Watch","Normal"]]
-    sentiment_chart = [{"label":k,"value":int(sentiment_counts[k]),"percent":round(int(sentiment_counts[k])/total*100,1)} for k in ["Positive","Neutral","Negative"]]
-
-    priority_rank = {"Urgent":0,"High":1,"Watch":2,"Normal":3}
-    queue_indices = reviews.index
-    queue = pd.DataFrame({
-        "_index": queue_indices,
-        "_priority": priority.to_numpy(),
-        "_rank": priority.map(priority_rank).to_numpy(),
-        "_score": score.to_numpy(),
-        "_negative": negative.to_numpy(),
-        "_safety": safety_hits.to_numpy(),
-        "_confidence": confidence.to_numpy(),
-        "_sentiment": sentiment.to_numpy(),
-        "_sentiment_score": sentiment_score.to_numpy(),
-        "_severity": severity.to_numpy(),
-        "_reason": reason.to_numpy(),
-        "_issue": issue_value.to_numpy(),
-    })
-    base_score = queue["_score"].map({1:70,2:55,3:35,4:15,5:5}).fillna(0)
-    queue["_priority_score"] = (base_score + (queue["_negative"] * 4).clip(upper=20) + queue["_safety"].gt(0).astype(int) * 30).clip(upper=100)
-    queue = queue.sort_values(["_rank","_priority_score","_confidence"],ascending=[True,False,False])
-    queue_meta = queue
-    rows = []
-    initial_queue = queue.head(50)
-    for _, queued in initial_queue.iterrows():
-        idx = queued["_index"]
-        row = reviews.loc[idx]
-        full_review = " ".join(str(row.get("Text","")).split())[:6000]
-        issues = detect_issue_types(full_review)
-        try:
-            source_index = int(idx)
-        except (TypeError, ValueError):
-            source_index = str(idx)
-        rows.append({
-            "source_index":source_index,
-            "rating":int(queued["_score"]),"sentiment":str(queued["_sentiment"]),
-            "sentiment_score":int(queued["_sentiment_score"]),"confidence":int(queued["_confidence"]),
-            "severity":str(queued["_severity"]),"priority":str(queued["_priority"]),
-            "priority_score":int(queued["_priority_score"]),"reason":str(queued["_reason"]),
-            "issues":", ".join(issues),"issue_value":issues[0],
-            "product":("" if pd.isna(row.get("ProductId","")) else str(row.get("ProductId","")))[:70],
-            "customer":("" if pd.isna(row.get("ProfileName","")) else str(row.get("ProfileName","")))[:100],
-            "review":full_review[:300] + ("..." if len(full_review)>300 else ""),
-            "full_review":full_review,
-        })
-    common = globals().get("complaint_df")
-    keywords = common.head(8).to_dict(orient="records") if isinstance(common,pd.DataFrame) and not common.empty else []
-    critical = int(score.le(2).sum())
-    _feedback_dashboard_cache = {
-        "ready":True,"version":version,"total":len(reviews),"critical":critical,
-        "critical_percent":round(critical/total*100,1),"positive":int(sentiment_counts["Positive"]),
-        "neutral":int(sentiment_counts["Neutral"]),"negative":int(sentiment_counts["Negative"]),
-        "flagged":int(priority.ne("Normal").sum()),"urgent":int(priority.eq("Urgent").sum()),
-        "rating_chart":rating_chart,"priority_chart":priority_chart,"sentiment_chart":sentiment_chart,
-        "flagged_rows":rows,"top_keywords":keywords,"_queue_meta":queue_meta,
-    }
     return _feedback_dashboard_cache
 
 
 def _build_feedback_dashboard():
-    global _feedback_dashboard_busy, _feedback_dashboard_error
+    global _feedback_dashboard_cache, _feedback_dashboard_busy, _feedback_dashboard_error
     try:
-        _dashboard_snapshot()
+        _feedback_dashboard_cache = prepare_store(
+            DATASET_PATH, DATABASE_PATH, os.getenv("REVIEWS_CSV_URL", "").strip()
+        )
         _feedback_dashboard_error = ""
     except Exception as exc:
         _feedback_dashboard_error = f"{type(exc).__name__}: {exc}"
     finally:
         _feedback_dashboard_busy = False
+
 
 def _start_feedback_dashboard():
     global _feedback_dashboard_busy, _feedback_dashboard_error
@@ -467,12 +314,9 @@ def _start_feedback_dashboard():
         _feedback_dashboard_error = ""
         Thread(target=_build_feedback_dashboard, daemon=True).start()
 
+
 def _dashboard_cache_is_current():
-    reviews = globals().get("df")
-    cache = globals().get("_feedback_dashboard_cache")
-    return (isinstance(reviews, pd.DataFrame) and not reviews.empty
-            and isinstance(cache, dict)
-            and cache.get("version") == f"{id(reviews)}:{len(reviews)}")
+    return bool((_feedback_dashboard_cache or {}).get("ready")) and DATABASE_PATH.is_file()
 
 DASHBOARD_PAGE = """
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Customer Feedback Dashboard</title>
@@ -516,91 +360,45 @@ async function refresh(){try{const response=await fetch('/api/dashboard',{cache:
 
 @app.get("/dashboard")
 def feedback_dashboard():
-    reviews = globals().get("df")
-    if not isinstance(reviews, pd.DataFrame) or reviews.empty:
-        snapshot = {"ready":False, "title":"Reviews.csv is required", "message":DATA_ERROR or "Place Reviews.csv at the configured dataset path and restart the service.", "retry":False}
-    elif not _dashboard_cache_is_current():
-        if request.args.get("retry") == "1" or not _feedback_dashboard_error:
+    if not _dashboard_cache_is_current():
+        if request.args.get("retry") == "1" or (not _feedback_dashboard_busy and not _feedback_dashboard_error):
             _start_feedback_dashboard()
         if _feedback_dashboard_error:
-            snapshot = {"ready":False, "title":"Dashboard analysis needs a retry", "message":_feedback_dashboard_error, "retry":True}
+            snapshot = {"ready": False, "title": "Dashboard preparation needs a retry", "message": _feedback_dashboard_error, "retry": True}
         else:
-            snapshot = {"ready":False, "title":"Preparing your dashboard", "message":f"Analyzing {len(reviews):,} reviews once in the background. This page will open automatically when it is ready.", "retry":False}
+            snapshot = {
+                "ready": False,
+                "title": "Preparing your dashboard",
+                "message": "Downloading and analyzing Reviews.csv in the background. This may take a few minutes on the free service.",
+                "retry": False,
+            }
     else:
         snapshot = _feedback_dashboard_cache
     return render_template_string(DASHBOARD_PAGE, snapshot=snapshot)
 
+
 @app.get("/api/queue")
 def dashboard_queue():
-    snapshot = globals().get("_feedback_dashboard_cache")
-    reviews = globals().get("df")
     if not _dashboard_cache_is_current():
-        return jsonify(rows=[], total=0, page=1, pages=1, start=0, end=0, ready=False, message="Dashboard analysis is still preparing. Please wait a moment.") , 503
-    queue = snapshot.get("_queue_meta")
-    if not isinstance(queue, pd.DataFrame) or not isinstance(reviews, pd.DataFrame):
-        return jsonify(rows=[], total=0, page=1, pages=1, start=0, end=0)
-    filtered = queue
-    for column, value in {
-        "_priority":request.args.get("priority", "").strip(),
-        "_severity":request.args.get("severity", "").strip(),
-        "_sentiment":request.args.get("sentiment", "").strip(),
-        "_score":request.args.get("rating", "").strip(),
-        "_issue":request.args.get("issue", "").strip(),
-        "_reason":request.args.get("reason", "").strip(),
-    }.items():
-        if value:
-            filtered = filtered[filtered[column].astype(str) == value]
-    query = request.args.get("q", "").strip()[:160]
-    if query:
-        found = pd.Series(False, index=reviews.index)
-        for column in ("Text", "ProfileName", "ProductId"):
-            if column in reviews.columns:
-                found |= reviews[column].fillna("").astype(str).str.contains(query, case=False, regex=False, na=False)
-        review_match = filtered["_index"].isin(reviews.index[found])
-        reason_match = filtered["_reason"].astype(str).str.contains(query, case=False, regex=False, na=False)
-        issue_match = filtered["_issue"].astype(str).str.contains(query, case=False, regex=False, na=False)
-        filtered = filtered[review_match | reason_match | issue_match]
-    total = len(filtered)
+        return jsonify(rows=[], total=0, page=1, pages=1, start=0, end=0,
+                       ready=False, message="Dashboard analysis is still preparing. Please wait a moment."), 503
     try:
-        page_size = int(request.args.get("page_size", "50"))
-    except ValueError:
-        page_size = 50
-    if page_size not in (25, 50, 100, 200):
-        page_size = 50
-    pages = max(1, (total + page_size - 1) // page_size)
-    try:
-        page = min(max(1, int(request.args.get("page", "1"))), pages)
-    except ValueError:
-        page = 1
-    start = (page - 1) * page_size
-    output = []
-    for _, item in filtered.iloc[start:start + page_size].iterrows():
-        row = reviews.loc[item["_index"]]
-        full_review = " ".join(str(row.get("Text", "")).split())[:6000]
-        issues = detect_issue_types(full_review)
-        output.append({
-            "priority":str(item["_priority"]),
-            "priority_score":int(item["_priority_score"]), "rating":int(item["_score"]),
-            "severity":str(item["_severity"]), "sentiment":str(item["_sentiment"]),
-            "sentiment_score":int(item["_sentiment_score"]), "confidence":int(item["_confidence"]),
-            "issues":", ".join(issues), "issue_value":str(item["_issue"]), "reason":str(item["_reason"]),
-            "customer":("" if pd.isna(row.get("ProfileName", "")) else str(row.get("ProfileName", "")))[:100], "product":("" if pd.isna(row.get("ProductId", "")) else str(row.get("ProductId", "")))[:70],
-            "review":full_review[:300] + ("..." if len(full_review) > 300 else ""), "full_review":full_review,
-        })
-    return jsonify(rows=output, total=total, page=page, pages=pages,
-                   start=start + 1 if total else 0, end=start + len(output))
+        return jsonify(fetch_queue(DATABASE_PATH, request.args))
+    except Exception as exc:
+        return jsonify(rows=[], total=0, page=1, pages=1, start=0, end=0,
+                       error=f"{type(exc).__name__}: {exc}"), 500
+
 
 @app.get("/api/dashboard")
 def dashboard_status():
     if _dashboard_cache_is_current():
         data = _feedback_dashboard_cache
-        return jsonify(ready=True, busy=False, version=data.get("version"), total=data.get("total"), critical=data.get("critical"), flagged=data.get("flagged"), urgent=data.get("urgent"))
-    reviews = globals().get("df")
-    if not isinstance(reviews, pd.DataFrame) or reviews.empty:
-        return jsonify(ready=False, busy=False, error="", message="Run the notebook data-loading and analysis cells first.")
+        return jsonify(ready=True, busy=False, version=data.get("version"), total=data.get("total"),
+                       critical=data.get("critical"), flagged=data.get("flagged"), urgent=data.get("urgent"))
     if _feedback_dashboard_error:
-        return jsonify(ready=False, busy=False, error=_feedback_dashboard_error, message="Dashboard analysis failed.")
-    return jsonify(ready=False, busy=bool(_feedback_dashboard_busy), error="", message="Preparing dashboard analysis.")
+        return jsonify(ready=False, busy=False, error=_feedback_dashboard_error, message="Dashboard preparation failed.")
+    return jsonify(ready=False, busy=bool(_feedback_dashboard_busy), error="",
+                   message="Downloading and analyzing Reviews.csv.")
 
 
 @app.route("/", methods=["GET", "POST"])

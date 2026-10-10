@@ -8,6 +8,8 @@ services:
     envVars:
       - key: REVIEWS_CSV_PATH
         value: /tmp/Reviews.csv
+      - key: REVIEWS_DB_PATH
+        value: /tmp/customer-feedback.sqlite
       - key: REVIEWS_CSV_URL
         value: https://github.com/Smriti-pal/Customer-Feedback-AI-Response-Studio/releases/download/reviews-data-v1/Reviews.csv
       - key: GEMINI_MODEL

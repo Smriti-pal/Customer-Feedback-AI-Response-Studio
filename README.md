@@ -26,7 +26,7 @@ A Flask dashboard based on **section 14** of the Jupyter notebook. It keeps that
 6. Let the first deploy finish, then open the Render URL and select **Open Feedback Dashboard**.
 7. To enable Gemini email drafts, add `GEMINI_API_KEY` under the Render service's environment variables. This is optional; the dashboard works without it.
 
-The browser interface is the notebook's section 14 UI. The loader reads only the columns used by the dashboard to reduce memory use. Render's free plan has 512 MB RAM and sleeps after inactivity; startup can be slow while it downloads and analyzes the CSV, and this dataset may still exceed the free memory limit. Its filesystem is temporary, so the release asset is downloaded again after the service sleeps, restarts, or redeploys. This is a no-cost demo setup, not an always-on service.
+The browser interface is the notebook's section 14 UI. The service streams the CSV into a disk-backed SQLite index rather than loading all reviews into memory. Render's free plan has 512 MB RAM and sleeps after inactivity, so the first dashboard load can take several minutes while it downloads and indexes the dataset. Its filesystem is temporary, so the CSV is downloaded and indexed again after the service sleeps, restarts, or redeploys. This is a no-cost demo setup, not an always-on service.
 
 ## Run locally
 
