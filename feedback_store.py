@@ -42,7 +42,10 @@ KEYWORD_STOPWORDS = {
     "also", "and", "are", "but", "for", "had", "has", "her", "him", "his", "how", "its",
     "not", "our", "out", "she", "the", "then", "them", "too", "you", "use", "used", "using",
     "one", "get", "got", "can", "will", "now", "buy", "bought", "much", "many", "make",
+    "like", "all", "good", "taste", "flavor", "food", "don", "even", "really", "tried",
+    "first", "any", "think", "know", "time", "well", "back", "still", "made", "lot",
 }
+KEYWORD_SUMMARY_VERSION = "2"
 
 
 def _analyze(text, rating):
@@ -143,12 +146,15 @@ def _summary(connection, version):
     ]
     critical = counts.get("rating_1", 0) + counts.get("rating_2", 0)
     keyword_row = connection.execute("SELECT value FROM metadata WHERE key='top_keywords'").fetchone()
-    if keyword_row:
+    keyword_version = connection.execute("SELECT value FROM metadata WHERE key='top_keywords_version'").fetchone()
+    if keyword_row and keyword_version and keyword_version[0] == KEYWORD_SUMMARY_VERSION:
         top_keywords = json.loads(keyword_row[0])
     else:
         top_keywords = _keyword_summary(connection)
         connection.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('top_keywords',?)",
                            (json.dumps(top_keywords),))
+        connection.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('top_keywords_version',?)",
+                           (KEYWORD_SUMMARY_VERSION,))
         connection.commit()
     return {
         "ready": True,
@@ -276,6 +282,8 @@ def prepare_store(csv_path, database_path, source_url, progress=None):
         ]
         connection.execute("INSERT INTO metadata(key,value) VALUES('top_keywords',?)",
                            (json.dumps(top_keywords),))
+        connection.execute("INSERT INTO metadata(key,value) VALUES('top_keywords_version',?)",
+                           (KEYWORD_SUMMARY_VERSION,))
         connection.commit()
         return _summary(connection, source_version)
     finally:
