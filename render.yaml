@@ -2,15 +2,13 @@ services:
   - type: web
     name: customer-feedback-ai-response-studio
     runtime: python
-    plan: standard
+    plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --workers 1 --threads 8 --timeout 600
-    disk:
-      name: reviews-data
-      mountPath: /var/data
-      sizeGB: 1
+    startCommand: gunicorn app:app --workers 1 --threads 4 --timeout 600
     envVars:
       - key: REVIEWS_CSV_PATH
-        value: /var/data/Reviews.csv
+        value: /tmp/Reviews.csv
+      - key: REVIEWS_CSV_URL
+        sync: false
       - key: GEMINI_MODEL
         value: gemini-3.8-flash

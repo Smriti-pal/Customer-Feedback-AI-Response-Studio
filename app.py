@@ -1,6 +1,8 @@
 """Customer feedback Flask app using the notebook's existing web interface."""
 import os
 import re
+import shutil
+import urllib.request
 from pathlib import Path
 
 import pandas as pd
@@ -119,20 +121,43 @@ DATA_ERROR = ""
 def load_reviews(path=DATASET_PATH):
     global DATA_ERROR
     if not path.is_file():
-        DATA_ERROR = f"Reviews.csv was not found at {path}. Add the file to the service data disk and set REVIEWS_CSV_PATH."
-        return pd.DataFrame(columns=["Score", "Text", "Cleaned_Text"])
-    frame = pd.read_csv(path, low_memory=False)
+        source_url = os.getenv("REVIEWS_CSV_URL", "").strip()
+        if source_url:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                temporary_path = path.with_suffix(path.suffix + ".download")
+                request = urllib.request.Request(source_url, headers={"User-Agent": "CustomerFeedbackStudio/1.0"})
+                with urllib.request.urlopen(request, timeout=600) as response, temporary_path.open("wb") as output:
+                    shutil.copyfileobj(response, output, length=1024 * 1024)
+                temporary_path.replace(path)
+            except Exception as exc:
+                DATA_ERROR = f"Could not download Reviews.csv: {type(exc).__name__}: {exc}"
+                return pd.DataFrame(columns=["Score", "Text"])
+        else:
+            DATA_ERROR = f"Reviews.csv was not found at {path}. Add it beside app.py or configure REVIEWS_CSV_URL."
+            return pd.DataFrame(columns=["Score", "Text"])
+    # Keep only the fields used by the dashboard and email writer. This reduces
+    # memory enough for the free web service while retaining every review.
+    needed_columns = {"Score", "Text", "ProductId", "ProfileName"}
+    try:
+        frame = pd.read_csv(
+            path,
+            usecols=lambda column: column in needed_columns,
+            low_memory=False,
+        )
+    except Exception as exc:
+        DATA_ERROR = f"Could not read Reviews.csv: {type(exc).__name__}: {exc}"
+        return pd.DataFrame(columns=["Score", "Text"])
     missing = REQUIRED_COLUMNS - set(frame.columns)
     if missing:
         raise ValueError(f"Reviews.csv is missing required columns: {sorted(missing)}")
-    frame = frame.drop_duplicates().dropna(subset=["Score", "Text"]).copy()
+    frame = frame.dropna(subset=["Score", "Text"])
     score = pd.to_numeric(frame["Score"], errors="coerce")
     valid = score.notna() & score.between(1, 5) & score.mod(1).eq(0)
     frame = frame.loc[valid].copy()
     frame["Score"] = score.loc[valid].astype("int8")
     frame["Text"] = frame["Text"].astype(str).str.strip()
-    frame["Cleaned_Text"] = frame["Text"].map(clean_text)
-    return frame.loc[frame["Cleaned_Text"].ne("")].reset_index(drop=True)
+    return frame.loc[frame["Text"].ne("")].reset_index(drop=True)
 
 
 df = load_reviews()
@@ -317,21 +342,21 @@ def _dashboard_snapshot():
     if _feedback_dashboard_cache and _feedback_dashboard_cache.get("version") == version:
         return _feedback_dashboard_cache
 
-    text = reviews.get("Cleaned_Text", reviews["Text"].fillna("").astype(str).str.lower()).fillna("").astype(str)
+    text = reviews["Text"]
     boundary = chr(92) + "b"
     space = chr(92) + "s+"
-    positive = text.str.count(boundary + "(?:" + "|".join(map(re.escape, sorted(SENTIMENT_POSITIVE_TERMS))) + ")" + boundary)
-    negative = text.str.count(boundary + "(?:" + "|".join(map(re.escape, sorted(SENTIMENT_NEGATIVE_TERMS))) + ")" + boundary)
+    positive = text.str.count(boundary + "(?:" + "|".join(map(re.escape, sorted(SENTIMENT_POSITIVE_TERMS))) + ")" + boundary, flags=re.IGNORECASE)
+    negative = text.str.count(boundary + "(?:" + "|".join(map(re.escape, sorted(SENTIMENT_NEGATIVE_TERMS))) + ")" + boundary, flags=re.IGNORECASE)
     negator = "(?:no|not|never|hardly)"
-    negated_positive = text.str.count(boundary + negator + space + "(?:" + "|".join(map(re.escape, sorted(SENTIMENT_POSITIVE_TERMS))) + ")" + boundary)
-    negated_negative = text.str.count(boundary + negator + space + "(?:" + "|".join(map(re.escape, sorted(SENTIMENT_NEGATIVE_TERMS))) + ")" + boundary)
+    negated_positive = text.str.count(boundary + negator + space + "(?:" + "|".join(map(re.escape, sorted(SENTIMENT_POSITIVE_TERMS))) + ")" + boundary, flags=re.IGNORECASE)
+    negated_negative = text.str.count(boundary + negator + space + "(?:" + "|".join(map(re.escape, sorted(SENTIMENT_NEGATIVE_TERMS))) + ")" + boundary, flags=re.IGNORECASE)
     positive = (positive - negated_positive + negated_negative).clip(lower=0)
     negative = (negative - negated_negative + negated_positive).clip(lower=0)
     sentiment_score = positive - negative
     issue_value = pd.Series("General Complaint", index=reviews.index, dtype="object")
     for category, terms in ISSUE_RULES.items():
         issue_pattern = boundary + "(?:" + "|".join(map(re.escape, sorted(terms))) + ")" + boundary
-        issue_match = text.str.contains(issue_pattern, na=False)
+        issue_match = text.str.contains(issue_pattern, case=False, na=False)
         issue_value.loc[issue_value.eq("General Complaint") & issue_match] = category
     cue_count = positive + negative
     confidence = (sentiment_score.abs() / cue_count.replace(0, 1) * 100).round().astype(int)
@@ -341,7 +366,7 @@ def _dashboard_snapshot():
     sentiment.loc[sentiment_score < 0] = "Negative"
     score = pd.to_numeric(reviews["Score"], errors="coerce").fillna(0).astype(int)
     safety_pattern = boundary + "(?:" + "|".join(map(re.escape, sorted(SAFETY_TERMS))) + ")" + boundary
-    safety_hits = text.str.count(safety_pattern)
+    safety_hits = text.str.count(safety_pattern, flags=re.IGNORECASE)
     strong_negative = (negative >= 2) & (negative > positive)
 
     priority = pd.Series("Normal", index=reviews.index, dtype="object")

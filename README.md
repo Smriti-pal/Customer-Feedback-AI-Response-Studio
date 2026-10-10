@@ -1,20 +1,37 @@
-# Customer Feedback Analysis and AI Response Studio
+# Customer Feedback AI Response Studio
 
-A Flask web app built from the dashboard and email studio already in the Jupyter notebook. The web interface uses the notebook's existing HTML, CSS, charts, queue, filters, and response drafting flow. The app uses **Reviews.csv only**; it does not substitute a sample file or accept another dataset.
+A Flask dashboard based on **section 14** of the Jupyter notebook. It keeps that dashboard's HTML, styling, charts, queue, filters, and response studio. The app reads `Reviews.csv`; it does not replace the requested dataset with sample data.
 
 ## Files
 
-- `app.py` serves the notebook's existing interface and loads `Reviews.csv`.
-- `Customer_Feedback_Analysis_AI_Response_Localhost.ipynb` contains the original analysis notebook and source UI.
-- `render.yaml` configures a Flask web service and persistent data disk on Render.
-- `.env.example` shows optional local Gemini settings. Never commit a real key.
+- `app.py` runs the Flask dashboard and email response studio.
+- `Customer_Feedback_Analysis_AI_Response_Localhost.ipynb` is the original notebook and UI source.
+- `render.yaml` configures a free Render web service deployed from this GitHub repository.
+- `.env.example` documents optional local Gemini settings. Do not commit a real API key.
 
-The 300 MB `Reviews.csv` stays out of GitHub. GitHub enforces a 100 MB maximum for a single Git object, and keeping the data outside source control also avoids publishing customer review data.
+`Reviews.csv` is about 300 MB, so it is intentionally not stored in the Git repository. GitHub blocks regular Git files over 100 MiB. For a public deployment, the service can download the CSV from a GitHub Release asset at startup. A public release asset is downloadable by anyone, so only use this with data you are permitted to publish.
+
+## Deploy free from GitHub
+
+1. Push this project to the `main` branch of your GitHub repository.
+2. In GitHub, open **Releases > Draft a new release**. Create a tag such as `reviews-data-v1`, attach `Reviews.csv`, and publish the release. Each release asset must be under 2 GiB, so this 300 MB CSV fits.
+3. Copy the asset's **download URL**. It should look like:
+
+   ```text
+   https://github.com/Smriti-pal/Customer-Feedback-AI-Response-Studio/releases/download/reviews-data-v1/Reviews.csv
+   ```
+
+4. In Render, choose **New > Blueprint**, connect this repository, and keep the `free` plan from `render.yaml`.
+5. When Render asks for `REVIEWS_CSV_URL`, paste the release download URL. Do not add `Reviews.csv` to the Git repository.
+6. Let the first deploy finish, then open the Render URL and select **Open Feedback Dashboard**.
+7. To enable Gemini email drafts, add `GEMINI_API_KEY` under the Render service's environment variables. This is optional; the dashboard works without it.
+
+The browser interface is the notebook's section 14 UI. The loader reads only the columns used by the dashboard to reduce memory use. Render's free plan has 512 MB RAM and sleeps after inactivity; startup can be slow while it downloads and analyzes the CSV, and this dataset may still exceed the free memory limit. Its filesystem is temporary, so the release asset is downloaded again after the service sleeps, restarts, or redeploys. This is a no-cost demo setup, not an always-on service.
 
 ## Run locally
 
 1. Install Python 3.10 or newer.
-2. Install the packages:
+2. Install dependencies:
 
    ```powershell
    python -m venv .venv
@@ -22,38 +39,26 @@ The 300 MB `Reviews.csv` stays out of GitHub. GitHub enforces a 100 MB maximum f
    pip install -r requirements.txt
    ```
 
-3. Put `Reviews.csv` beside `app.py`.
+3. Place `Reviews.csv` beside `app.py`.
 4. Start the app:
 
    ```powershell
    python app.py
    ```
 
-5. Open `http://127.0.0.1:10000` and choose **Open Feedback Dashboard**.
+5. Open `http://127.0.0.1:10000` and select **Open Feedback Dashboard**.
 
-The dashboard route is `/dashboard`. If the CSV is absent, the app displays a clear missing-data message instead of silently loading sample data.
+## Optional Gemini configuration
 
-## Deploy the same UI
+Copy `.env.example` to `.env` and enter your Gemini key, or configure `GEMINI_API_KEY` in the hosting service's environment settings. Keep `.env` private and out of GitHub. Review text is sent to Google's Gemini API only when a user requests an AI draft.
 
-This is a Flask application. Streamlit Community Cloud only runs Streamlit apps, so it cannot serve this notebook's Flask UI unchanged. Use Render to deploy the GitHub repository:
+The service has no login or access controls. Do not publish private or sensitive customer information in a public website or public release asset.
 
-1. In Render, choose **New > Blueprint** and connect this repository on the `main` branch. Render reads `render.yaml` to configure the service.
-2. The blueprint uses a paid Standard web service and a persistent 1 GB disk at `/var/data`. Render's free service filesystem is ephemeral, and persistent disks are available for paid services.
-3. After the service is created, transfer your local `Reviews.csv` to `/var/data/Reviews.csv` on the service disk using the Render dashboard's SSH/SCP instructions. The file must be available at this path; it is not downloaded from GitHub.
-4. Restart or redeploy the service after the transfer. Open the Render URL and select **Open Feedback Dashboard**.
-5. If you want AI drafts, set `GEMINI_API_KEY` in the Render service environment settings and redeploy. The dashboard works without Gemini.
-
-Render deployment documentation: [Flask apps](https://render.com/docs/deploy-flask) and [persistent disks and file transfer](https://render.com/docs/disks).
-
-## Gemini and customer data
-
-The email studio sends review text and response context to Google's Gemini API only when someone requests a draft. Configure the key outside GitHub. Before using real customer data on a public service, confirm your organization's privacy and data-sharing requirements. The service does not have user accounts or access controls.
-
-## Review flags
+## Flag definitions
 
 - **Urgent:** 1-star rating or safety/health language.
 - **High:** 2-star rating or strongly negative wording on a 3-star review.
 - **Watch:** other negative text sentiment.
 - **Normal:** no elevated flag rule matched.
 
-Sentiment and issue types are word-list estimates for triage. Read the review before taking action.
+Sentiment and issue labels are transparent word-list estimates for triage. Review the original feedback before responding.
